@@ -1,0 +1,13 @@
+{
+  "name": "bun-minimal",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --watch server.ts",
+    "start": "bun server.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "s200": "latest"
+  }
+}

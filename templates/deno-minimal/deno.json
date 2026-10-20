@@ -1,0 +1,13 @@
+{
+  "name": "deno-minimal",
+  "tasks": {
+    "dev": "deno run --watch app.ts",
+    "start": "deno run app.ts",
+    "test": "deno test"
+  },
+  "imports": {
+    "s200": "npm:s200@latest",
+    "s200/deno": "npm:s200@latest/deno",
+    "s200/test": "npm:s200@latest/test"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "node-rest",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "s200 dev ./app.ts",
+    "start": "node server.ts",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "s200": "latest"
+  }
+}

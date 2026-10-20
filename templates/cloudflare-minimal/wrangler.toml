@@ -1,0 +1,3 @@
+name = "cloudflare-minimal"
+main = "app.ts"
+compatibility_date = "2025-09-01"

@@ -1,0 +1,17 @@
+{
+  "name": "create-s200",
+  "version": "0.0.0-development",
+  "description": "Zero-dependency scaffolder for s200 apps — npm create s200@latest",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "bin": {
+    "create-s200": "bin/create-s200.mjs"
+  },
+  "files": [
+    "bin",
+    "templates"
+  ]
+}
