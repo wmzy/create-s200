@@ -54,5 +54,5 @@ what's available when you ask for a missing one.
 Plain Node, no build step, no dependencies. Run the scaffolder tests:
 
 ```sh
-node --test test/
+npm test
 ```
