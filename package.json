@@ -13,5 +13,35 @@
   "files": [
     "bin",
     "templates"
-  ]
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "create",
+    "scaffolder",
+    "scaffold",
+    "template",
+    "boilerplate",
+    "starter",
+    "s200",
+    "node",
+    "bun",
+    "deno",
+    "cloudflare",
+    "workers",
+    "zero-dependency"
+  ],
+  "author": "wmzy",
+  "homepage": "https://github.com/wmzy/create-s200#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wmzy/create-s200.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wmzy/create-s200/issues"
+  },
+  "devDependencies": {
+    "semantic-release": "^25.0.9"
+  }
 }

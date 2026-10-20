@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: "*"
+  pull_request:
+    branches: "*"
+
+jobs:
+  # create-s200 零依赖、无构建步骤：CI 的门禁就是测试本身。
+  # node --test 跑 test/ 下的脚手架用例（真实 spawn bin、真实复制模板）。
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  # 发包前置门禁：先在本地把发布产物打出来并真跑一次——校验 tarball 里
+  # bin 与全部模板齐全（files 字段配错时这里就红），并用打出来的 tarball
+  # 真实脚手架一个项目。发到 npm 之前就把「发出去的包跑不起来」拦下来。
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Pack the publishable tarball
+        run: |
+          set -euo pipefail
+          npm pack --pack-destination "$RUNNER_TEMP"
+          ls -l "$RUNNER_TEMP"/*.tgz
+
+      - name: Verify package contents
+        run: |
+          set -euo pipefail
+          tarball="$(ls "$RUNNER_TEMP"/create-s200-*.tgz | head -n 1)"
+          node --input-type=module -e "
+            import { execFileSync } from 'node:child_process';
+            const tarball = process.argv[1];
+            const list = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' });
+            const expected = [
+              'package/bin/create-s200.mjs',
+              'package/templates/bun-minimal/package.json',
+              'package/templates/cloudflare-minimal/wrangler.toml',
+              'package/templates/deno-minimal/deno.json',
+              'package/templates/node-minimal/package.json',
+              'package/templates/node-rest/package.json',
+            ];
+            const missing = expected.filter((entry) => !list.split('\n').includes(entry));
+            if (missing.length) throw new Error('missing from tarball: ' + missing.join(', '));
+            console.log('pack ok —', expected.length, 'required entries present');
+          " "$tarball"
+
+      - name: Scaffold from the packed tarball
+        run: |
+          set -euo pipefail
+          tarball="$(ls "$RUNNER_TEMP"/create-s200-*.tgz | head -n 1)"
+          dir="$(mktemp -d)"
+          cd "$dir"
+          # 写一个空的 manifest 把安装锚定在当前目录：否则 npm 会向上找到
+          # 祖先目录里的 package.json，把包装到别处去，node_modules/.bin 落空。
+          printf '{"name":"pack-check","private":true}\n' > package.json
+          npm install --no-audit --no-fund "$tarball"
+          node node_modules/.bin/create-s200 ./app --runtime node --template rest
+          test -f ./app/app.ts
+          test -f ./app/package.json
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            const pkg = JSON.parse(readFileSync('./app/package.json', 'utf8'));
+            if (pkg.name !== 'app') throw new Error('manifest name not rewritten: ' + pkg.name);
+            console.log('scaffold ok — manifest name rewritten to', pkg.name);
+          "
+
+      - name: Upload packed tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: create-s200-tarball
+          path: ${{ runner.temp }}/create-s200-*.tgz
+          retention-days: 14

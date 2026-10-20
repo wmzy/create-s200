@@ -1,0 +1,212 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bin/**"
+      - "templates/**"
+      - "test/**"
+      - "package.json"
+      - ".releaserc.json"
+      - ".github/workflows/release.yml"
+  pull_request:
+    paths:
+      - "bin/**"
+      - "templates/**"
+      - "test/**"
+      - "package.json"
+      - ".releaserc.json"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    if: github.event_name != 'pull_request'
+    outputs:
+      published: ${{ steps.release.outputs.published }}
+      version: ${{ steps.release.outputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # semantic-release 需要完整历史与 tag 计算上一版本。
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # create-s200 无构建步骤（零依赖、纯 Node ESM 源码直接发布），
+      # 校验即测试本身：node --test 跑 test/ 下的脚手架用例。
+      - name: Run tests
+        run: pnpm test
+
+      - name: Release
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # npm 的 provenance 溯源只支持公开仓库（私有仓库即使发公开包
+          # 也会被 registry 拒绝）。仓库公开时开启——与 haze-ui 的发布产物
+          # 一样带 slsa provenance 凭证；仓库仍是私有时关闭，让发布本身
+          # 继续跑通（npm 在公开仓库下也会自动开启 provenance）。
+          NPM_CONFIG_PROVENANCE: ${{ github.event.repository.visibility == 'public' }}
+        run: |
+          set -o pipefail
+          npx semantic-release 2>&1 | tee semantic-release.log
+          # semantic-release 对「无可发布变更」同样以 0 退出，无法凭退出码区分，
+          # 从日志提取结果：真实发布成功后固定打印
+          # "Published release <version> on <channel> channel"（semver 的 prerelease
+          # 段可含点号，捕获到下一个空格为止）。
+          version="$(sed -nE 's/.*Published release ([0-9][^ ]+) on .* channel.*/\1/p' semantic-release.log | tail -n 1)"
+          if [ -n "$version" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # PR 发布预演：对 PR 的合并结果完整跑一遍 semantic-release --dry-run——
+  # 校验 .releaserc 配置与 NPM_TOKEN 可用性，并预演下一版本号与变更日志；
+  # dry-run 不会创建 tag / GitHub Release / npm 包。
+  preview:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 降不下来：semantic-release 在分析前用 `git push --dry-run` 探测写权限
+    # （verifyAuth），read-only 的 GITHUB_TOKEN 会被 GitHub 拒绝，随即以
+    # 「local branch is behind」为由静默跳过预演。同仓库 PR 才能拿到
+    # contents:write（fork PR 恒为只读，对应分支已在下方 step 级 if 跳过）。
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # semantic-release 需要完整历史与 tag 计算上一版本。
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Release dry-run (preview next version)
+        # fork PR 拿不到 secrets（NPM_TOKEN），GITHUB_TOKEN 也是只读——
+        # 无法完成任何有意义的校验，跳过而非挂红。
+        if: github.event.pull_request.head.repo.fork == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # semantic-release 经 env-ci 识别 pull_request 事件后会直接短路
+          # （"This run was triggered by a pull request ..."）；且 PR 的
+          # GITHUB_REF 是 refs/pull/N/merge，随后的分支白名单校验也会提前
+          # 退出。把 env-ci 探测的这两个变量伪装成「推送到 base 分支」，
+          # 让它按合并结果的语义完整跑 commit 分析 / verifyConditions /
+          # generateNotes（tag 与 publish 仍被 --dry-run 跳过）。
+          GITHUB_EVENT_NAME: push
+          GITHUB_REF: refs/heads/${{ github.event.pull_request.base.ref }}
+        run: |
+          set -o pipefail
+          npx semantic-release --dry-run 2>&1 | tee semantic-release-dry-run.log
+          # 预演必须产出确定结论：要么算出下一版本，要么明确「无可发布变更」。
+          # 若伪装失效（semantic-release 升级改了行为/日志），宁可挂红也不
+          # 假绿。
+          grep -qE "The next release version is|There are no relevant changes" semantic-release-dry-run.log
+
+  # 发布后 smoke：npm registry 的 tarball 传播有延迟，轮询直到新版本可见，
+  # 再在临时目录安装该版本，验证包内容（bin + 全部模板）齐全，并真实跑一次
+  # 脚手架：bin 可执行、模板能被复制、生成的 manifest 的 name 被改写。
+  smoke:
+    needs: release
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Wait for create-s200@${{ needs.release.outputs.version }} on npm
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 300))
+          delay=5
+          while true; do
+            if url="$(npm view "create-s200@$VERSION" dist.tarball 2>/dev/null)" && [ -n "$url" ]; then
+              echo "tarball visible: $url"
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::create-s200@$VERSION not visible on npm after 300s"
+              exit 1
+            fi
+            echo "not visible yet; retrying in ${delay}s"
+            sleep "$delay"
+            delay=$(( delay >= 60 ? 60 : delay * 2 ))
+          done
+
+      - name: Install and exercise the published package
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d)"
+          cd "$dir"
+          # 写一个空的 manifest 把安装锚定在当前目录：否则 npm 会向上找到
+          # 祖先目录里的 package.json，把包装到别处去，node_modules/.bin 落空。
+          printf '{"name":"smoke-check","private":true}\n' > package.json
+          # 零依赖，干净目录即可验证打包产物。
+          npm install --no-audit --no-fund "create-s200@$VERSION"
+          node --input-type=module -e "
+            import { existsSync, readdirSync } from 'node:fs';
+            import { fileURLToPath } from 'node:url';
+            const root = fileURLToPath(new URL('node_modules/create-s200/', import.meta.url));
+            const bin = root + 'bin/create-s200.mjs';
+            if (!existsSync(bin)) throw new Error('bin missing from package: ' + bin);
+            const templates = readdirSync(root + 'templates').sort();
+            const expected = ['bun-minimal', 'cloudflare-minimal', 'deno-minimal', 'node-minimal', 'node-rest'];
+            for (const name of expected) {
+              if (!templates.includes(name)) throw new Error('missing template: ' + name);
+            }
+            console.log('smoke ok —', expected.length, 'templates; bin:', bin);
+          "
+          # 真实脚手架一次：bin 可执行、模板被复制、manifest 的 name 改写成
+          # 目标目录的 basename（package.json / deno.json / wrangler.toml）。
+          node node_modules/.bin/create-s200 ./app --runtime node --template rest
+          test -f ./app/app.ts
+          test -f ./app/server.ts
+          test -f ./app/package.json
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            const pkg = JSON.parse(readFileSync('./app/package.json', 'utf8'));
+            if (pkg.name !== 'app') throw new Error('manifest name not rewritten: ' + pkg.name);
+            console.log('scaffold ok — manifest name rewritten to', pkg.name);
+          "
